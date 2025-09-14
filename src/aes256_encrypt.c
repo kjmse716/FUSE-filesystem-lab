@@ -5,26 +5,18 @@
 #include <openssl/core_names.h>
 #include <time.h>
 #include <string.h>
-#define BUFFER_SIZE 1000
-#define DEBUG
+#include "aes256_encrypt.h"
 
-//struct used for file content.
-typedef struct {
-    char *content;
-    int size;
-    unsigned char key[32];
-    unsigned char iv[12];
 
-}file_metadata;
 
 //print hex data stored in char data type.
 int print_data(const char *start_ptr,int data_len,char*data_name){
     #ifdef DEBUG
-    printf("\n%s\n",data_name);
-    for(int i = 0;i<data_len;i++){
-        printf("%x ",(unsigned char)start_ptr[i]);
-    }
-    printf("\n");
+        printf("\n%s\n",data_name);
+        for(int i = 0;i<data_len;i++){
+            printf("%x ",(unsigned char)start_ptr[i]);
+        }
+        printf("\n");
     #endif
 }
 
