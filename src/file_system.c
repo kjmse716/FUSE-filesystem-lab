@@ -28,6 +28,7 @@ struct inode_struct
 	inode_struct* files_under; // hash table for files under this dir.
 	file_metadata* file_metadata;
 	UT_hash_handle hh; // makes this structure hashable
+	time_t mtime;
 
 };
 
@@ -39,18 +40,26 @@ static inode_struct* hash_add_inode(inode_struct** target_hash_table, char *file
 	strcpy(s->file_name, file_name);
 	s->is_file = is_file;
 	s->files_under = NULL;
+	s->mtime = time(NULL);
 	HASH_ADD_STR(*target_hash_table, file_name, s);  // file system usualy use inode number as key, here use file_name just for ease.
 	return s;
 
 }
 
-static inode_struct* hash_find_inode(inode_struct** target_hash_table, char *file_name) {
+
+static void hash_join_inode(inode_struct** target_hash_table, inode_struct* target_inode) {
+
+	HASH_ADD_STR(*target_hash_table, file_name, target_inode);  // file system usualy use inode number as key, here use file_name just for ease.
+}
+
+static inode_struct* hash_find_inode(inode_struct* target_hash_table, char *file_name) {
 	inode_struct *s;
 
-	HASH_FIND_STR(*target_hash_table, file_name, s);  /* s: output pointer */
+	HASH_FIND_STR(target_hash_table, file_name, s);  /* s: output pointer */
 	return s;
 
 }
+
 
 void hash_delete_inode(inode_struct** target_hash_table, inode_struct* target_file) {
 	HASH_DEL(*target_hash_table, target_file);  /*user: pointer to delete */ 
@@ -89,7 +98,7 @@ inode_struct** get_hash_table_from_path(const char* path, char* child_name_out)
 {
 	if(strcmp(path, "/") == 0)
 	{
-		strncpy(child_name_out, "/", MAX_FILENAME_LENGTH);
+		strncpy(child_name_out, "\0", MAX_FILENAME_LENGTH);
 		return &root->files_under;
 	}
 
@@ -111,7 +120,7 @@ inode_struct** get_hash_table_from_path(const char* path, char* child_name_out)
 	{
 		if(parent_name != NULL)
 		{
-			parent = hash_find_inode(&parent->files_under, parent_name);
+			parent = hash_find_inode(parent->files_under, parent_name);
 			if(parent==NULL)
 				return NULL;
 		}
@@ -140,7 +149,7 @@ int is_dir( const char* path )
 {
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 	
 	if(!target) return 0;
 	return target->is_file==0?1:0;
@@ -166,7 +175,7 @@ int is_file( const char* path )
 {
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct**hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 
 	if(!target) return 0;
@@ -178,7 +187,9 @@ void write_to_file( const char* path, const char* new_content )
 {
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
+
+	target->mtime = time(NULL);
 
 	printf("Write content unencrypt:\n%s\n",new_content);
 	aes_gcm_encrypt(new_content,target->file_metadata);
@@ -188,10 +199,15 @@ void write_to_file( const char* path, const char* new_content )
 
 static int do_getattr( const char *path, struct stat *st )
 {
+	char target_name [MAX_FILENAME_LENGTH];
+	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
+
 	st->st_uid = getuid(); // The owner of the file/directory is the user who mounted the filesystem
 	st->st_gid = getgid(); // The group of the file/directory is the same as the group of the user who mounted the filesystem
 	st->st_atime = time( NULL ); // The last "a"ccess of the file/directory is right now
-	st->st_mtime = time( NULL ); // The last "m"odification of the file/directory is right now
+	if(target)
+		st->st_mtime = target->mtime; // The last "m"odification of the file/directory is right now
 
 	if ( strcmp( path, "/" ) == 0 || is_dir( path ) == 1 )
 	{
@@ -231,7 +247,7 @@ static int do_readdir( const char *path, void* buffer, fuse_fill_dir_t filler, o
 
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 	
 	if(!target)
@@ -249,7 +265,7 @@ static int do_read( const char *path, char* buffer, size_t size, off_t offset, s
 {
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 	if (target==NULL)
 		return -1;
@@ -263,9 +279,8 @@ static int do_read( const char *path, char* buffer, size_t size, off_t offset, s
 	if(size > len - offset) size = len - offset;
 
 	memcpy( buffer, content + offset, size );
-	size_t return_value = strlen( content ) - offset;
 	free(content);
-	return return_value;
+	return size;
 
 }
 
@@ -294,7 +309,7 @@ static int do_open(const char* path,struct fuse_file_info* fi)
 {
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 	if(target){
 		char* key = target->file_metadata->key;
@@ -313,7 +328,7 @@ static int do_release(const char* path,struct fuse_file_info* fi){
 static int do_rmdir(const char* path){
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 	hash_delete_inode(hash_table, target);
 
@@ -324,12 +339,35 @@ static int do_rmdir(const char* path){
 static int do_unlink(const char* path){
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
-	inode_struct* target = hash_find_inode(hash_table, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 	hash_delete_inode(hash_table, target);
 	
 	return 0;
 }
+
+static int do_rename(const char *oldpath, const char *newpath){
+	char target_name [MAX_FILENAME_LENGTH];
+	inode_struct** hash_table = get_hash_table_from_path(oldpath, target_name);
+	inode_struct* target = hash_find_inode(*hash_table, target_name);
+
+	if(!target)
+		return 0;
+
+	HASH_DEL(*hash_table, target); 
+	
+	hash_table = get_hash_table_from_path(newpath, target_name);
+	strncpy(target->file_name, target_name, MAX_FILENAME_LENGTH);
+	
+	inode_struct* exist = hash_find_inode(*hash_table, target_name);
+	if(exist)
+		hash_delete_inode(hash_table, exist);
+
+	hash_join_inode(hash_table, target);
+
+	return 0;
+}
+
 
 static struct fuse_operations operations = {
 	.getattr = do_getattr,
@@ -341,7 +379,8 @@ static struct fuse_operations operations = {
 	.open = do_open,
 	.release = do_release,
 	.rmdir = do_rmdir,
-	.unlink = do_unlink
+	.unlink = do_unlink,
+	.rename = do_rename
 };
 
 int main( int argc, char *argv[] )
