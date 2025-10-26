@@ -1,2 +1,2 @@
-aes256_encrypt
+src/aes256_encrypt.o
 file_system
