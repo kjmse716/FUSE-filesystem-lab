@@ -1,16 +1,16 @@
 #ifndef AES256_ENCRYPT_H
 #define AES256_ENCRYPT_H
 
+#include <uuid/uuid.h>
 
 #define BUFFER_SIZE 1000
 #define DEBUG
 
 //struct used for file content.
 typedef struct {
-    char *content;
-    int size;
     unsigned char key[32];
     unsigned char iv[12];
+    uuid_t uuid;
 
 }file_metadata;
 
@@ -21,9 +21,9 @@ file_metadata* file_metadata_init();
 
 int file_metadata_free(file_metadata* data);
 
-file_metadata* aes_gcm_encrypt(const char *input,file_metadata* data);
+int aes_gcm_encrypt(const char *input,file_metadata* data, char ** encrypted_output);
 
-void aes_gcm_decrypt(file_metadata * data,char** output);
+void aes_gcm_decrypt(const char* encrypted_input, int size, file_metadata * data,char** output);
 
 
 
