@@ -1,2 +1,4 @@
 src/aes256_encrypt.o
 file_system
+.data
+.metadata.dat

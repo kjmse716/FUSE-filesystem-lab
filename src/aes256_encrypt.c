@@ -6,6 +6,8 @@
 #include <time.h>
 #include <string.h>
 #include "aes256_encrypt.h"
+#include <openssl/rand.h>
+
 
 
 
@@ -21,8 +23,9 @@ int print_data(const char *start_ptr,int data_len,char*data_name){
 }
 
 int random_key_gen(unsigned char* random256key,int byte_num){
-    for(int i = 0;i<byte_num;i++){
-        random256key[i] = rand()&0xFF;
+    if(RAND_bytes(random256key, byte_num) != 1){
+        fprintf(stderr, "Error: RAND_bytes failed to generate random data.\n");
+        return -1;
     }
     #ifdef DEBUG
     printf("New file key generated.\n");
@@ -34,15 +37,15 @@ file_metadata* file_metadata_init(){
     file_metadata *data = (file_metadata*)malloc(sizeof(file_metadata));
     random_key_gen(data->key, 32);
     random_key_gen(data->iv,12); 
-    data ->content = NULL;
+    uuid_generate(data->uuid);
     data->size = 0;
+    print_data((char*)data->uuid, sizeof(uuid_t), "New file UUID:");
     print_data(data->key,32,"New file key:");
     return data;
 }
 
 
 int file_metadata_free(file_metadata* data){
-    free(data->content);
     free(data);
 }
 
@@ -55,22 +58,22 @@ static unsigned char gcm_pt[] = {
 #endif
 
 
-file_metadata* aes_gcm_encrypt(const char *input,file_metadata* data){
-    if(strlen(input)!=0){
+size_t aes_gcm_encrypt(const char *input, size_t input_len,file_metadata* data, char ** encrypted_output){
+    if(input_len!=0){
         //initial setting reference from openssl aes demo
         EVP_CIPHER_CTX *ctx;
         EVP_CIPHER *cipher = NULL;
         int outlen,tmplen;
 
         // unsigned char outbuf[BUFFER_SIZE];
-        unsigned char* outbuf = (char*)calloc(strlen(input),sizeof(char));
+        unsigned char* outbuf = (char*)calloc(input_len,sizeof(char));
         OSSL_PARAM params[2] = {
             OSSL_PARAM_END, OSSL_PARAM_END
         };
 
         size_t gcm_ivlen = sizeof(data->iv);
 
-        print_data(input,strlen(input),"Write content unencrypt(Hex):");
+        print_data(input,input_len,"Write content unencrypt(Hex):");
         /* Set IV length if default 96 bits is not appropriate */
         params[0] = OSSL_PARAM_construct_size_t(OSSL_CIPHER_PARAM_AEAD_IVLEN,
                                                 &gcm_ivlen);
@@ -79,32 +82,26 @@ file_metadata* aes_gcm_encrypt(const char *input,file_metadata* data){
 
         // aes encryption
         EVP_EncryptInit_ex2(ctx, cipher, data->key, data->iv, params);
-        EVP_EncryptUpdate(ctx, outbuf, &outlen, input, strlen(input));
+        EVP_EncryptUpdate(ctx, outbuf, &outlen, input, input_len);
         EVP_EncryptFinal_ex(ctx, outbuf, &tmplen);
         outlen+=tmplen;
 
         //saving encrypted content and size.
-        if(data->content != NULL){
-            free(data->content);
-            data->content = NULL;
-        }
-        data->content = (char*)calloc(outlen,sizeof(char));
-        memcpy(data->content,outbuf,(int)outlen);
-        free(outbuf);
-        data->size = (int)outlen;
-
-        print_data(data->content,data->size,"Write content encrypted(Hex)");
+        *encrypted_output = (char*)outbuf;
+        
+        print_data(*encrypted_output,(int)outlen,"Write content encrypted(Hex)");
 
         EVP_CIPHER_free(cipher);
         EVP_CIPHER_CTX_free(ctx);
+        return (int)outlen;
     }
-    return data;
+    return 0;
 }
 
 
 //unsigned char* gcm_ct
-void aes_gcm_decrypt(file_metadata * data,char** output){
-    if(data->size!= 0){
+size_t aes_gcm_decrypt(const char* encrypted_input, size_t size, file_metadata * data,char** output){
+    if(size!= 0){
 
         //initial setting reference from openssl aes demo
         EVP_CIPHER_CTX *ctx;
@@ -113,14 +110,14 @@ void aes_gcm_decrypt(file_metadata * data,char** output){
         int total_outlen;
         size_t gcm_ivlen = sizeof(data->iv);
         // unsigned char outbuf[BUFFER_SIZE];
-        unsigned char* outbuf = (char*)calloc(data->size,sizeof(char));
+        unsigned char* outbuf = (char*)calloc(size,sizeof(char));
         OSSL_PARAM params[2] = {
             OSSL_PARAM_END, OSSL_PARAM_END
         };
         #ifdef USE_INCORRECT_KEY
         *(data->key) = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6";
         #endif
-        print_data(data->content,strlen(data->content),"File content undecrypt(Hex):");
+        print_data(encrypted_input,size,"File content undecrypt(Hex):");
         /* Set IV length if default 96 bits is not appropriate */
         params[0] = OSSL_PARAM_construct_size_t(OSSL_CIPHER_PARAM_AEAD_IVLEN,
                                                 &gcm_ivlen);
@@ -128,7 +125,7 @@ void aes_gcm_decrypt(file_metadata * data,char** output){
         ctx = EVP_CIPHER_CTX_new();
         // aes decryption
         EVP_DecryptInit_ex2(ctx, cipher, data->key, data->iv, params);
-        EVP_DecryptUpdate(ctx, outbuf, &outlen, data->content, data->size);
+        EVP_DecryptUpdate(ctx, outbuf, &outlen, encrypted_input, size);
         total_outlen = outlen;
 
         EVP_DecryptFinal_ex(ctx, outbuf, &outlen);
@@ -142,9 +139,12 @@ void aes_gcm_decrypt(file_metadata * data,char** output){
 
         EVP_CIPHER_free(cipher);
         EVP_CIPHER_CTX_free(ctx);
+
+        return total_outlen;
     }else{
         *output = (char*)calloc(1,sizeof(char));
         *output[0] = '\0';
+        return 0;
     }
 
 }
