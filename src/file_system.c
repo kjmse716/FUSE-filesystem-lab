@@ -46,7 +46,7 @@ void serialize_inode(FILE* f, inode_struct* inode, int depth) {
     if (inode->is_file && inode->file_metadata) {
         char uuid_str[37];
         uuid_unparse(inode->file_metadata->uuid, uuid_str);
-        fprintf(f, "META,%s,%ld,", uuid_str, inode->file_metadata->size);
+        fprintf(f, "META,%s,%zu,", uuid_str, inode->file_metadata->size);
         for(int i=0; i<32; i++) fprintf(f, "%02x", inode->file_metadata->key[i]);
         fprintf(f, ",");
         for(int i=0; i<12; i++) fprintf(f, "%02x", inode->file_metadata->iv[i]);
@@ -91,7 +91,7 @@ void deserialize_metadata() {
             char key_str[65];
             char iv_str[25];
 			size_t size;
-            sscanf(line, "META,%36[^,],%ld,%64[^,],%24s", uuid_str, &size, key_str, iv_str);
+            sscanf(line, "META,%36[^,],%zu,%64[^,],%24s", uuid_str, &size, key_str, iv_str);
             
             inode_struct* file_node = path_stack[last_depth];
             file_node->file_metadata = malloc(sizeof(file_metadata));
@@ -377,7 +377,7 @@ static int do_read( const char *path, char* buffer, size_t size, off_t offset, s
 	if(!f) return -1;
 
 	fseek(f, 0, SEEK_END);
-	long fsize = ftell(f);
+	size_t fsize = ftell(f);
 	fseek(f, 0, SEEK_SET);
 
 	char * encrypted_content = malloc(fsize);
@@ -436,7 +436,7 @@ static int do_write( const char* path, const char* buffer, size_t size, off_t of
     FILE* f = fopen(file_path, "rb");
     if (f) {
         fseek(f, 0, SEEK_END);
-        long fsize = ftell(f);
+        size_t fsize = ftell(f);
         fseek(f, 0, SEEK_SET);
         if (fsize > 0) {
             char* old_encrypted_content = malloc(fsize);
@@ -466,7 +466,7 @@ static int do_write( const char* path, const char* buffer, size_t size, off_t of
 
 	// --- Encrypt & Write back ---
     char* encrypted_output = NULL;
-    int encrypted_size = aes_gcm_encrypt(new_decrypted_content, target->file_metadata, &encrypted_output);
+    size_t encrypted_size = aes_gcm_encrypt(new_decrypted_content, new_len, target->file_metadata, &encrypted_output);
     free(new_decrypted_content);
 
     f = fopen(file_path, "wb");

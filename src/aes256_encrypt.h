@@ -21,9 +21,9 @@ file_metadata* file_metadata_init();
 
 int file_metadata_free(file_metadata* data);
 
-int aes_gcm_encrypt(const char *input,file_metadata* data, char ** encrypted_output);
+size_t aes_gcm_encrypt(const char *input, size_t input_length ,file_metadata* data, char ** encrypted_output);
 
-int aes_gcm_decrypt(const char* encrypted_input, int size, file_metadata * data,char** output);
+size_t aes_gcm_decrypt(const char* encrypted_input, size_t size, file_metadata * data,char** output);
 
 
 
