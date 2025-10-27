@@ -26,14 +26,13 @@ typedef struct inode_struct inode_struct;
 struct inode_struct
 {
 	char file_name [MAX_FILENAME_LENGTH];
-	char content [256]; // content or pointer to file that store data.
 	int is_file; // 0 for dir, 1 for file.
 	inode_struct* files_under; // hash table for files under this dir.
 	file_metadata* file_metadata;
 	UT_hash_handle hh; // makes this structure hashable
 	time_t mtime;
-
 };
+
 static inode_struct* root = NULL; // Root hash table
 
 /* --- Persistence data storage ---*/
@@ -47,7 +46,7 @@ void serialize_inode(FILE* f, inode_struct* inode, int depth) {
     if (inode->is_file && inode->file_metadata) {
         char uuid_str[37];
         uuid_unparse(inode->file_metadata->uuid, uuid_str);
-        fprintf(f, "META,%s,", uuid_str);
+        fprintf(f, "META,%s,%ld,", uuid_str, inode->file_metadata->size);
         for(int i=0; i<32; i++) fprintf(f, "%02x", inode->file_metadata->key[i]);
         fprintf(f, ",");
         for(int i=0; i<12; i++) fprintf(f, "%02x", inode->file_metadata->iv[i]);
@@ -91,10 +90,12 @@ void deserialize_metadata() {
             char uuid_str[37];
             char key_str[65];
             char iv_str[25];
-            sscanf(line, "META,%36[^,],%64[^,],%24s", uuid_str, key_str, iv_str);
+			size_t size;
+            sscanf(line, "META,%36[^,],%ld,%64[^,],%24s", uuid_str, &size, key_str, iv_str);
             
             inode_struct* file_node = path_stack[last_depth];
             file_node->file_metadata = malloc(sizeof(file_metadata));
+			file_node->file_metadata->size = size;
             uuid_parse(uuid_str, file_node->file_metadata->uuid);
             for(int i=0; i<32; i++) sscanf(&key_str[i*2], "%2hhx", &file_node->file_metadata->key[i]);
             for(int i=0; i<12; i++) sscanf(&iv_str[i*2], "%2hhx", &file_node->file_metadata->iv[i]);
@@ -104,6 +105,8 @@ void deserialize_metadata() {
             int depth, is_file;
             char name[MAX_FILENAME_LENGTH];
             sscanf(line, "%d,%d,%[^\n]", &depth, &is_file, name);
+
+			if(depth == 0)continue;
 
             inode_struct* parent = path_stack[depth - 1];
             inode_struct* new_node = malloc(sizeof(inode_struct));
@@ -309,7 +312,7 @@ static int do_getattr( const char *path, struct stat *st )
 	{
 		st->st_mode = S_IFREG | 0644;
 		st->st_nlink = 1;
-		st->st_size = 1024;
+		st->st_size = (target && target->file_metadata)? target->file_metadata->size:0;
 	}
 	else
 	{
@@ -385,10 +388,11 @@ static int do_read( const char *path, char* buffer, size_t size, off_t offset, s
 	// Decrypt file content
 
 	char * decrypted_content;
-	aes_gcm_decrypt(encrypted_content, fsize, target->file_metadata ,&decrypted_content);
-	printf("\noffset = %d,   size  = %d\n",(int)offset,(int)size);
+	size_t len;
 
-	size_t len = strlen(decrypted_content);
+	len = aes_gcm_decrypt(encrypted_content, fsize, target->file_metadata ,&decrypted_content);
+	printf("\noffset = %ld,   size  = %ld, decrypted_len = %ld\n", offset, size, len);
+
 	if(offset >= len) return 0;
 	if(size > len - offset) size = len - offset;
 
@@ -448,7 +452,7 @@ static int do_write( const char* path, const char* buffer, size_t size, off_t of
     }
     
     // --- Combine old and new data (for encription) ---
-    size_t old_len = strlen(old_decrypted_content);
+    size_t old_len = target->file_metadata->size;
     size_t new_len = offset + size;
     char* new_decrypted_content = (char*)malloc(new_len + 1);
     memcpy(new_decrypted_content, old_decrypted_content, offset > old_len ? old_len : offset);
@@ -477,6 +481,7 @@ static int do_write( const char* path, const char* buffer, size_t size, off_t of
     fclose(f);
 
     target->mtime = time(NULL);
+	target->file_metadata->size = new_len;
     serialize_metadata(); // Store changes to disk every time.
 	return size;
 }

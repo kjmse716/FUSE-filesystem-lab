@@ -35,6 +35,7 @@ file_metadata* file_metadata_init(){
     random_key_gen(data->key, 32);
     random_key_gen(data->iv,12); 
     uuid_generate(data->uuid);
+    data->size = 0;
     print_data((char*)data->uuid, sizeof(uuid_t), "New file UUID:");
     print_data(data->key,32,"New file key:");
     return data;
@@ -96,7 +97,7 @@ int aes_gcm_encrypt(const char *input,file_metadata* data, char ** encrypted_out
 
 
 //unsigned char* gcm_ct
-void aes_gcm_decrypt(const char* encrypted_input, int size, file_metadata * data,char** output){
+int aes_gcm_decrypt(const char* encrypted_input, int size, file_metadata * data,char** output){
     if(size!= 0){
 
         //initial setting reference from openssl aes demo
@@ -135,9 +136,12 @@ void aes_gcm_decrypt(const char* encrypted_input, int size, file_metadata * data
 
         EVP_CIPHER_free(cipher);
         EVP_CIPHER_CTX_free(ctx);
+
+        return total_outlen;
     }else{
         *output = (char*)calloc(1,sizeof(char));
         *output[0] = '\0';
+        return 0;
     }
 
 }
