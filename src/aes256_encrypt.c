@@ -6,7 +6,7 @@
 #include <time.h>
 #include <string.h>
 #include "aes256_encrypt.h"
-
+#include <openssl/rand.h>
 
 
 //print hex data stored in char data type.
@@ -21,8 +21,9 @@ int print_data(const char *start_ptr,int data_len,char*data_name){
 }
 
 int random_key_gen(unsigned char* random256key,int byte_num){
-    for(int i = 0;i<byte_num;i++){
-        random256key[i] = rand()&0xFF;
+    if(RAND_bytes(random256key, byte_num) != 1){
+        fprintf(stderr, "Error: RAND_bytes failed to generate random data.\n");
+        return -1;
     }
     #ifdef DEBUG
     printf("New file key generated.\n");
