@@ -9,7 +9,7 @@ aes256_encrypt.o:aes256_encrypt.c
 
 
 file_system:file_system.c aes256_encrypt.o
-	$(COMPILER) -o file_system file_system.c aes256_encrypt.o `pkg-config fuse --cflags --libs` -lcrypto -luuid
+	$(COMPILER) -o file_system file_system.c aes256_encrypt.o `pkg-config fuse --cflags --libs` -lcrypto -luuid -lpthread
 	echo 'To Mount: ./file_system -f [mount point]'
 	
 

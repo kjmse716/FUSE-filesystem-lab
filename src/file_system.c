@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <pthread.h>
 
 #include "aes256_encrypt.h"
 #include "uthash.h"
@@ -34,6 +35,7 @@ struct inode_struct
 };
 
 static inode_struct* root = NULL; // Root hash table
+static pthread_mutex_t global_lock;
 
 /* --- Persistence data storage ---*/
 void serialize_inode(FILE* f, inode_struct* inode, int depth) {
@@ -293,6 +295,7 @@ int is_file( const char* path )
 
 static int do_getattr( const char *path, struct stat *st )
 {
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
@@ -316,15 +319,17 @@ static int do_getattr( const char *path, struct stat *st )
 	}
 	else
 	{
+		pthread_mutex_unlock(&global_lock);
 		return -ENOENT;
 	}
-
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 
 }
 
 static int do_readdir( const char *path, void* buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi )
 {
+	pthread_mutex_lock(&global_lock);
 	filler( buffer, ".", NULL, 0 ); // Current Directory
 	filler( buffer, "..", NULL, 0 ); // Parent Directory
 
@@ -335,7 +340,7 @@ static int do_readdir( const char *path, void* buffer, fuse_fill_dir_t filler, o
 		for (s = root->files_under; s != NULL; s = s->hh.next) {
 			filler(buffer, s->file_name, NULL, 0);
 		}
-
+		pthread_mutex_unlock(&global_lock);
 		return 0;
 	}
 
@@ -344,25 +349,30 @@ static int do_readdir( const char *path, void* buffer, fuse_fill_dir_t filler, o
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
 	
-	if(!target)
+	if(!target){
+		pthread_mutex_unlock(&global_lock);
 		return 0;
+	}
 
 	for (s = target->files_under; s != NULL; s = s->hh.next) {
 		filler(buffer, s->file_name, NULL, 0);
 	}
-
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 
 }
 
 static int do_read( const char *path, char* buffer, size_t size, off_t offset, struct fuse_file_info* fi )
 {
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
-	if (target==NULL)
+	if (target==NULL){
+		pthread_mutex_unlock(&global_lock);
 		return -1;
+	}
 
 	// Build file path from UUID
 	char uuid_str[37];
@@ -374,7 +384,10 @@ static int do_read( const char *path, char* buffer, size_t size, off_t offset, s
 	// Read encrypted file content
 
 	FILE* f = fopen(file_path, "rb");
-	if(!f) return -1;
+	if(!f) {
+		pthread_mutex_unlock(&global_lock);
+		return -1;
+	}
 
 	fseek(f, 0, SEEK_END);
 	size_t fsize = ftell(f);
@@ -393,38 +406,109 @@ static int do_read( const char *path, char* buffer, size_t size, off_t offset, s
 	len = aes_gcm_decrypt(encrypted_content, fsize, target->file_metadata ,&decrypted_content);
 	printf("\noffset = %ld,   size  = %ld, decrypted_len = %ld\n", offset, size, len);
 
-	if(offset >= len) return 0;
+	if(offset >= len) {
+		free(decrypted_content);
+		pthread_mutex_unlock(&global_lock);	
+		return 0;
+	}
 	if(size > len - offset) size = len - offset;
 
 	memcpy( buffer, decrypted_content + offset, size );
 	free(decrypted_content);
+	pthread_mutex_unlock(&global_lock);
 	return size;
 
 }
 
 static int do_mkdir( const char *path, mode_t mode )
 {
+	pthread_mutex_lock(&global_lock);
 	add_dir( path );
 	serialize_metadata();
-
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 
 }
 
 static int do_mknod( const char *path, mode_t mode, dev_t rdev )
 {
+	pthread_mutex_lock(&global_lock);
 	add_file( path );
 	serialize_metadata();
+
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 
 }
 
+static int do_create( const char *path, mode_t mode, struct fuse_file_info* info )
+{
+	pthread_mutex_lock(&global_lock);
+	add_file( path );
+	serialize_metadata();
+
+	pthread_mutex_unlock(&global_lock);
+	return 0;
+
+}
+
+static int do_truncate(const char* path, off_t offset)
+{
+    pthread_mutex_lock(&global_lock);
+
+    char target_name[MAX_FILENAME_LENGTH];
+    inode_struct** hash_table = get_hash_table_from_path(path, target_name);
+    inode_struct* target = hash_find_inode(*hash_table, target_name);
+
+    if (target == NULL || !target->is_file) {
+        pthread_mutex_unlock(&global_lock);
+        return -ENOENT;
+    }
+
+    if (offset == 0) {
+        char uuid_str[37];
+        char file_path[512];
+        uuid_unparse(target->file_metadata->uuid, uuid_str);
+        snprintf(file_path, sizeof(file_path), "%s/%s", DATA_DIR, uuid_str);
+
+        char* encrypted_output = NULL;
+        size_t encrypted_size = aes_gcm_encrypt("", 0, target->file_metadata, &encrypted_output);
+
+        FILE* f = fopen(file_path, "wb");
+        if (f) {
+            if (encrypted_output) {
+                fwrite(encrypted_output, encrypted_size, 1, f);
+                free(encrypted_output);
+            }
+            fclose(f);
+        }
+
+        target->file_metadata->size = 0;
+        target->mtime = time(NULL);
+        serialize_metadata();
+    }
+
+    pthread_mutex_unlock(&global_lock);
+    return 0;
+}
+
+
+
 static int do_write( const char* path, const char* buffer, size_t size, off_t offset, struct fuse_file_info* info ) {
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
     
-    if (target == NULL || !target->is_file) return -ENOENT;
+    if (target == NULL || !target->is_file){
+		pthread_mutex_unlock(&global_lock);
+		return -ENOENT;
+	}
+
+	if(info->flags & O_APPEND){
+		offset = target->file_metadata->size;
+	}
+
 
     // --- Read old content ---
     char uuid_str[37];
@@ -472,6 +556,7 @@ static int do_write( const char* path, const char* buffer, size_t size, off_t of
     f = fopen(file_path, "wb");
     if (!f) {
         if(encrypted_output) free(encrypted_output);
+		pthread_mutex_unlock(&global_lock);
         return -EIO;
     }
     if (encrypted_output) {
@@ -483,11 +568,14 @@ static int do_write( const char* path, const char* buffer, size_t size, off_t of
     target->mtime = time(NULL);
 	target->file_metadata->size = new_len;
     serialize_metadata(); // Store changes to disk every time.
+
+	pthread_mutex_unlock(&global_lock);
 	return size;
 }
 
 static int do_open(const char* path,struct fuse_file_info* fi)
 {
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
@@ -496,49 +584,69 @@ static int do_open(const char* path,struct fuse_file_info* fi)
 		char* key = target->file_metadata->key;
 		print_data(key,32,"file key obtained. file key : ");
 	}
-
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 
 }
 
 static int do_release(const char* path,struct fuse_file_info* fi){
+	pthread_mutex_lock(&global_lock);
 	printf("file closed");
+
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 }
 
 static int do_rmdir(const char* path){
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
-	if(!target || target->is_file) return -ENOENT;
-	if(target->files_under != NULL) return -ENOTEMPTY;
-
+	if(!target || target->is_file){
+		pthread_mutex_unlock(&global_lock);
+		return -ENOENT;
+	}
+	if(target->files_under != NULL) {
+		pthread_mutex_unlock(&global_lock);
+		return -ENOTEMPTY;
+	}
 	hash_delete_inode(hash_table, target);
 	serialize_metadata();
 
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 
 }
 
 static int do_unlink(const char* path){
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(path, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
+	if(!target){
+		pthread_mutex_unlock(&global_lock);
+		return -ENOENT;
+	}
+
 	hash_delete_inode(hash_table, target);
 	serialize_metadata();
 	
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 }
 
 static int do_rename(const char *oldpath, const char *newpath){
+	pthread_mutex_lock(&global_lock);
 	char target_name [MAX_FILENAME_LENGTH];
 	inode_struct** hash_table = get_hash_table_from_path(oldpath, target_name);
 	inode_struct* target = hash_find_inode(*hash_table, target_name);
 
-	if(!target)
+	if(!target){
+		pthread_mutex_unlock(&global_lock);
 		return 0;
+	}
 
 	HASH_DEL(*hash_table, target); 
 	
@@ -551,6 +659,8 @@ static int do_rename(const char *oldpath, const char *newpath){
 
 	hash_join_inode(hash_table, target);
 	serialize_metadata();
+
+	pthread_mutex_unlock(&global_lock);
 	return 0;
 }
 
@@ -561,6 +671,8 @@ static struct fuse_operations operations = {
 	.read = do_read,
 	.mkdir = do_mkdir,
 	.mknod = do_mknod,
+	.create = do_create,
+	.truncate = do_truncate,
 	.write = do_write,
 	.open = do_open,
 	.release = do_release,
@@ -572,6 +684,7 @@ static struct fuse_operations operations = {
 int main( int argc, char *argv[] )
 {
 	mkdir(DATA_DIR, 0755);
+	pthread_mutex_init(&global_lock, NULL);
 
 	root = malloc(sizeof(inode_struct));
 	strcpy(root->file_name, "/");
@@ -581,5 +694,9 @@ int main( int argc, char *argv[] )
 
 	deserialize_metadata();
 
-	return fuse_main( argc, argv, &operations, NULL );
+	int ret = fuse_main( argc, argv, &operations, NULL );
+	
+	pthread_mutex_destroy(&global_lock);
+
+	return ret;
 }

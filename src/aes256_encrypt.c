@@ -9,6 +9,8 @@
 #include <openssl/rand.h>
 
 
+
+
 //print hex data stored in char data type.
 int print_data(const char *start_ptr,int data_len,char*data_name){
     #ifdef DEBUG
@@ -104,8 +106,8 @@ size_t aes_gcm_decrypt(const char* encrypted_input, size_t size, file_metadata *
         //initial setting reference from openssl aes demo
         EVP_CIPHER_CTX *ctx;
         EVP_CIPHER *cipher = NULL;
-        size_t outlen;
-        size_t total_outlen;
+        int outlen;
+        int total_outlen;
         size_t gcm_ivlen = sizeof(data->iv);
         // unsigned char outbuf[BUFFER_SIZE];
         unsigned char* outbuf = (char*)calloc(size,sizeof(char));
